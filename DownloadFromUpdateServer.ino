@@ -80,6 +80,8 @@ void processUpdateHexBody(uint8_t dataByte, boolean end_of_stream);
 unsigned long total_bytes_read = 0;
 unsigned long body_bytes_read = 0;
 uint16_t crc16_checksum = 0;
+uint32_t flash_file_size = 0;
+uint16_t flash_signature = 0;
 
 void setup(void)
 {
@@ -94,9 +96,27 @@ void setup(void)
     Serial.println(F("Failed!"));  
   }  
 
-  Serial.println(F("Hello, CC3000!\n")); 
-  
+  Serial.println(F("Hello, CC3000!\n"));   
   Serial.print("Free RAM: "); Serial.println(getFreeRam(), DEC);
+
+  // retrieve the current signature parameters  
+  flash_file_size = flash.readByte(FILESIZE_ADDRESS);
+  flash_file_size <<= 8;
+  flash_file_size |= flash.readByte(FILESIZE_ADDRESS+1);
+  flash_file_size <<= 8;
+  flash_file_size |= flash.readByte(FILESIZE_ADDRESS+2);  
+  flash_file_size <<= 8;
+  flash_file_size |= flash.readByte(FILESIZE_ADDRESS+3);  
+
+  flash_signature = flash.readByte(CRC16_CHECKSUM_ADDRESS);
+  flash_signature <<= 8;
+  flash_signature |= flash.readByte(CRC16_CHECKSUM_ADDRESS+1);
+  
+  Serial.print("Current Signature: ");
+  Serial.print(flash_file_size);
+  Serial.print(" ");
+  Serial.print(flash_signature);
+  Serial.println();
   
   /* Initialise the module */
   Serial.println(F("\nInitializing..."));
@@ -158,8 +178,16 @@ void setup(void)
   }
   
   if(num_hdr_bytes > 0){
-    downloadFile("test.hex", processUpdateHexBody);    
-    //readOutFlashContents();
+    // compare the just-retrieved signature file contents 
+    // to the signature already stored in flash
+    if((flash_file_size != integrity_num_bytes_total) || 
+      (flash_signature != integrity_crc16_checksum)){
+      downloadFile("test.hex", processUpdateHexBody);    
+      //readOutFlashContents();
+    }
+    else{
+      Serial.println("Signature matches, skipping HEX download.");
+    }
   }
   else{
     Serial.println("Failed to download integrity check file, skipping Hex file download");
