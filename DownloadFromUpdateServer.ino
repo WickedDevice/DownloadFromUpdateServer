@@ -31,6 +31,7 @@ It might not work on all networks!
 
 #include <ccspi.h>
 #include <SPI.h>
+#include <TinyWatchdog.h>
 #include <string.h>
 #include "utility/debug.h"
 #include "util/crc16.h"
@@ -38,6 +39,7 @@ It might not work on all networks!
 WildFire wf;
 WildFire_CC3000 cc3000;
 WildFire_SPIFlash flash;
+TinyWatchdog tinyWDT;
 
 #define WLAN_SSID       "xxxxxxxxx"           // cannot be longer than 32 characters!
 #define WLAN_PASS       "xxxxxxxxx"
@@ -86,6 +88,8 @@ uint16_t flash_signature = 0;
 void setup(void)
 {
   wf.begin();
+  tinyWDT.begin(500, 60000); 
+  cc3000.enableTinyWatchdog(14, 500);
   Serial.begin(115200);
 
   Serial.print(F("SPI Flash Initialization..."));
@@ -182,8 +186,30 @@ void setup(void)
     // to the signature already stored in flash
     if((flash_file_size != integrity_num_bytes_total) || 
       (flash_signature != integrity_crc16_checksum)){
+      flash.chipErase();
+      
+      // write these parameters to their rightful place in the SPI flash
+      // for consumption by the bootloader
+      
+      while(flash.busy()){;}   
+      flash.blockErase4K(LAST_4K_PAGE_ADDRESS);
+      while(flash.busy()){;}  
+      
+      flash.writeByte(CRC16_CHECKSUM_ADDRESS + 0, (integrity_crc16_checksum >> 8) & 0xff);
+      flash.writeByte(CRC16_CHECKSUM_ADDRESS + 1, (integrity_crc16_checksum >> 0) & 0xff);
+      
+      flash.writeByte(FILESIZE_ADDRESS + 0, (integrity_num_bytes_total >> 24) & 0xff);
+      flash.writeByte(FILESIZE_ADDRESS + 1, (integrity_num_bytes_total >> 16) & 0xff);    
+      flash.writeByte(FILESIZE_ADDRESS + 2, (integrity_num_bytes_total >> 8)  & 0xff);
+      flash.writeByte(FILESIZE_ADDRESS + 3, (integrity_num_bytes_total >> 0)  & 0xff);            
+      
       downloadFile("test.hex", processUpdateHexBody);    
+      while(flash.busy()){;}   
+      delay(500);
       //readOutFlashContents();
+      
+      // use tinywatchdog to force reset
+      tinyWDT.force_reset();      
     }
     else{
       Serial.println("Signature matches, skipping HEX download.");
@@ -198,11 +224,16 @@ void setup(void)
   Serial.println(F("\n\nDisconnecting"));
   cc3000.disconnect();
   
+  pinMode(6, OUTPUT);
+  digitalWrite(6, LOW);
 }
 
 void loop(void)
 {
- delay(1000);
+ static uint8_t led_state = 0; 
+ delay(500);
+ digitalWrite(6, led_state);
+ led_state = 1 - led_state;
 }
 
 /**************************************************************************/
@@ -302,7 +333,7 @@ uint16_t downloadFile(char * filename, void (*responseBodyProcessor)(uint8_t, bo
   /* Try connecting to the website.
      Note: HTTP/1.1 protocol is used to keep the server from closing the connection before all data is read.
   */
-  
+  tinyWDT.pet();
   WildFire_CC3000_Client www = cc3000.connectTCP(ip, 80);
   if (www.connected()) {
     www.fastrprint(F("GET /"));
@@ -336,6 +367,7 @@ uint16_t downloadFile(char * filename, void (*responseBodyProcessor)(uint8_t, bo
   while (www.connected() && (millis() - lastRead < IDLE_TIMEOUT_MS)) {   
     while (www.available()) {
       //char c = www.read();
+      tinyWDT.pet();
       num_bytes_read = www.read(mybuffer, 255);
       num_chunks++;
       for(uint8_t ii = 0 ; ii < num_bytes_read; ii++){
@@ -426,23 +458,9 @@ void processIntegrityCheckBody(uint8_t dataByte, boolean end_of_stream){
     Serial.print(  "   File Size: ");
     Serial.println(integrity_num_bytes_total);
     Serial.print(  "   CRC16 Checksum: ");
-    Serial.println(integrity_crc16_checksum);   
-    
-    // also write these parameters to their rightful place in the SPI flash
-    // for consumption by the bootloader
-    while(flash.busy()){;}   
-    flash.blockErase4K(LAST_4K_PAGE_ADDRESS);
-    while(flash.busy()){;}  
-    
-    flash.writeByte(CRC16_CHECKSUM_ADDRESS + 0, (integrity_crc16_checksum >> 8) & 0xff);
-    flash.writeByte(CRC16_CHECKSUM_ADDRESS + 1, (integrity_crc16_checksum >> 0) & 0xff);
-    
-    flash.writeByte(FILESIZE_ADDRESS + 0, (integrity_num_bytes_total >> 24) & 0xff);
-    flash.writeByte(FILESIZE_ADDRESS + 1, (integrity_num_bytes_total >> 16) & 0xff);    
-    flash.writeByte(FILESIZE_ADDRESS + 2, (integrity_num_bytes_total >> 8)  & 0xff);
-    flash.writeByte(FILESIZE_ADDRESS + 3, (integrity_num_bytes_total >> 0)  & 0xff);            
+    Serial.println(integrity_crc16_checksum);             
   }
-  else{
+  else{    
     if(buff_idx < 63){
       buff[buff_idx++] = dataByte;
     }
